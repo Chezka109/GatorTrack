@@ -44,10 +44,13 @@ def login(student: str):
         scopes=SCOPES,
         redirect_uri=GOOGLE_REDIRECT_URI,
     )
-    flow.params["login_hint"] = student
+
     auth_url, _ = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true"
+        access_type="offline",
+        include_granted_scopes="true",
+        login_hint=student,  # <- this replaces flow.params
     )
+
     return {"url": auth_url}
 
 
