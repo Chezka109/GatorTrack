@@ -22,6 +22,11 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 user_tokens = {}  # {student_username: credentials pickle}
 
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
 # ------------------------
 # OAuth endpoints
 # ------------------------
