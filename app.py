@@ -1,98 +1,111 @@
-from fastapi import FastAPI, Request, Header, HTTPException
-from datetime import datetime
+from fastapi import FastAPI, Request
+from datetime import datetime, timedelta
 import os
-import hmac
-import hashlib
 import json
+import pickle
+
+# Google libraries
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
 
 app = FastAPI()
 
-# Load webhook secret from environment variables
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+# In-memory token store (for testing)
+user_tokens = {}  # {student_username: credentials pickle}
 
 
-def verify_github_signature(payload: bytes, signature: str) -> bool:
-    """
-    Verify GitHub webhook signature (optional but recommended).
-    """
-    if WEBHOOK_SECRET is None:
-        # Allow unsigned webhooks during development
-        return True
-
-    if signature is None:
-        return False
-
-    try:
-        sha_name, signature = signature.split("=")
-    except ValueError:
-        return False
-
-    if sha_name != "sha256":
-        return False
-
-    mac = hmac.new(WEBHOOK_SECRET.encode(), msg=payload, digestmod=hashlib.sha256)
-
-    return hmac.compare_digest(mac.hexdigest(), signature)
-
-
-@app.get("/health")
-def health_check():
-    """
-    Simple health check endpoint.
-    """
-    return {"status": "ok"}
+# ------------------------
+# OAuth endpoints
+# ------------------------
+@app.get("/auth/login")
+def login(student: str):
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+    flow.params["login_hint"] = student
+    auth_url, _ = flow.authorization_url(
+        access_type="offline", include_granted_scopes="true"
+    )
+    return {"url": auth_url}
 
 
+@app.get("/auth/callback")
+def auth_callback(code: str, student: str):
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    # Save credentials (in-memory for now)
+    user_tokens[student] = creds
+    return {"status": "success"}
+
+
+# ------------------------
+# GitHub webhook
+# ------------------------
 @app.post("/webhook")
-async def github_webhook(
-    request: Request,
-    x_github_event: str = Header(None),
-    x_hub_signature_256: str = Header(None),
-):
-    """
-    GitHub webhook endpoint.
-    """
-    raw_body = await request.body()
+async def github_webhook(request: Request):
+    payload = await request.json()
+    event = request.headers.get("X-GitHub-Event")
 
-    # Verify signature
-    if not verify_github_signature(raw_body, x_hub_signature_256):
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    if event == "repository" and payload.get("action") == "created":
+        repo_name = payload["repository"]["name"]
+        owner = payload["repository"]["owner"]["login"]
 
-    try:
-        payload = json.loads(raw_body)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    # Log event type
-    print("📦 GitHub Event:", x_github_event)
-
-    # Only handle assignment acceptance (repo created)
-    if x_github_event == "repository" and payload.get("action") == "created":
-        repository = payload.get("repository", {})
-        owner = repository.get("owner", {})
-
-        assignment_repo = repository.get("name")
-        student_username = owner.get("login")
-
-        # Timestamp when assignment was accepted
-        accepted_at = repository.get("created_at")
-
-        # Timestamp when webhook was received
+        accepted_at = payload["repository"]["created_at"]
         received_at = datetime.utcnow().isoformat() + "Z"
 
         print("✅ Assignment accepted")
-        print("Student:", student_username)
-        print("Repo:", assignment_repo)
+        print("Repo:", repo_name)
+        print("GitHub username:", owner)
         print("GitHub timestamp:", accepted_at)
         print("Webhook received at:", received_at)
 
-        # TODO:
-        # 1. Look up assignment due date (GitHub Classroom API)
-        # 2. Create Google Calendar event
-        # 3. Store event ID to prevent duplicates
-
-    else:
-        # Ignore all other events
-        print("ℹ️ Event ignored")
+        # ----- Google Calendar Integration -----
+        # Look up student credentials
+        creds = user_tokens.get(owner)
+        if creds:
+            service = build("calendar", "v3", credentials=creds)
+            # Example: create event due 1 week from repo creation
+            due_date = datetime.fromisoformat(
+                accepted_at.replace("Z", "+00:00")
+            ) + timedelta(days=7)
+            event = {
+                "summary": f"{repo_name} due",
+                "description": f"Assignment {repo_name} accepted",
+                "start": {"dateTime": accepted_at, "timeZone": "UTC"},
+                "end": {"dateTime": due_date.isoformat(), "timeZone": "UTC"},
+            }
+            created = service.events().insert(calendarId="primary", body=event).execute()
+            print("📅 Google Calendar event created:", created["id"])
+        else:
+            print(f"⚠️ No Google credentials for {owner}. Student must log in.")
 
     return {"status": "ok"}
