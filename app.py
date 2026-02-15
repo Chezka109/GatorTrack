@@ -97,6 +97,10 @@ async def github_webhook(request: Request):
 
     creds = user_tokens.get("student")
 
+    if not creds:
+        print("No stored credentials found")
+        return {"status": "no auth"}
+
     if creds:
         service = build("calendar", "v3", credentials=creds)
 
