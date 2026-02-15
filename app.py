@@ -64,26 +64,38 @@ def login(student: str):
 # OAuth Callback
 # =============================
 @app.get("/auth/callback")
-def callback(code: str, state: str = None):
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        },
-        scopes=SCOPES,
-        redirect_uri=GOOGLE_REDIRECT_URI,
-    )
+async def callback(request: Request):
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
 
-    flow.fetch_token(code=code)
+    if error:
+        print("Google returned error:", error)
+        return {"error": error}
 
-    credentials = flow.credentials
-    user_tokens["student"] = credentials
+    if not code:
+        return {"error": "No code in query params"}
 
-    return {"status": "Google Calendar connected successfully"}
+    try:
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            },
+            scopes=SCOPES,
+            redirect_uri=GOOGLE_REDIRECT_URI,
+        )
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        user_tokens["student"] = creds
+        return {"status": "Google Calendar connected"}
+    except Exception as e:
+        print("OAuth Exception:", e)
+        return {"error": str(e)}
 
 
 # =============================
