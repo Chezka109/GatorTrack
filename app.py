@@ -3,8 +3,31 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from datetime import datetime
 
 app = FastAPI()
+
+
+def create_calendar_event(creds, title, description, due_date):
+    service = build("calendar", "v3", credentials=creds)
+
+    event = {
+        "summary": title,
+        "description": description,
+        "start": {
+            "dateTime": due_date,
+            "timeZone": "America/New_York",
+        },
+        "end": {
+            "dateTime": due_date,
+            "timeZone": "America/New_York",
+        },
+    }
+
+    created_event = service.events().insert(calendarId="primary", body=event).execute()
+
+    return created_event.get("htmlLink")
+
 
 # =============================
 # Environment Variables
@@ -102,33 +125,16 @@ async def callback(request: Request):
 # GitHub Webhook
 # =============================
 @app.post("/webhook")
-async def github_webhook(request: Request):
-    payload = await request.json()
-
-    assignment_name = payload.get("repository", {}).get("name", "Unknown Assignment")
+async def webhook(data: dict):
+    title = data.get("title")
+    description = data.get("description", "")
+    due_date = data.get("due_date")  # ISO format
 
     creds = user_tokens.get("student")
 
     if not creds:
-        print("No stored credentials found")
-        return {"status": "no auth"}
+        return {"error": "User not authenticated"}
 
-    if creds:
-        service = build("calendar", "v3", credentials=creds)
+    link = create_calendar_event(creds, title, description, due_date)
 
-        event = {
-            "summary": f"{assignment_name} Due",
-            "description": "GitHub Classroom assignment",
-            "start": {
-                "dateTime": "2026-02-20T23:59:00",
-                "timeZone": "UTC",
-            },
-            "end": {
-                "dateTime": "2026-02-21T00:00:00",
-                "timeZone": "UTC",
-            },
-        }
-
-        service.events().insert(calendarId="primary", body=event).execute()
-
-    return {"status": "webhook received"}
+    return {"status": "Assignment added to calendar", "event_link": link}
