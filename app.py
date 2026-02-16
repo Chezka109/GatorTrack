@@ -8,18 +8,24 @@ from datetime import datetime
 app = FastAPI()
 
 
-def create_calendar_event(creds, title, description, due_date):
+def create_calendar_event(creds, title, description, due_date_iso):
     service = build("calendar", "v3", credentials=creds)
+
+    # Parse due date safely
+    due_datetime = datetime.fromisoformat(due_date_iso)
+
+    # Make event 1 hour long
+    end_datetime = due_datetime + timedelta(hours=1)
 
     event = {
         "summary": title,
         "description": description,
         "start": {
-            "dateTime": due_date,
+            "dateTime": due_datetime.isoformat(),
             "timeZone": "America/New_York",
         },
         "end": {
-            "dateTime": due_date,
+            "dateTime": end_datetime.isoformat(),
             "timeZone": "America/New_York",
         },
     }
