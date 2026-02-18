@@ -106,13 +106,16 @@ async def callback(request: Request):
 
 def parse_due_date(raw_due):
     if not raw_due:
-        now = datetime.now()
-        return now.replace(hour=23, minute=59, second=0, microsecond=0)
+        return None  # Let caller decide fallback behavior
 
     if isinstance(raw_due, str):
+        # If full ISO timestamp already provided
+        if "T" in raw_due:
+            return datetime.fromisoformat(raw_due)
+
+        # If only date provided, return date-only event indicator
         if len(raw_due) == 10:
-            raw_due += "T23:59:00"
-        return datetime.fromisoformat(raw_due)
+            return raw_due  # Return string for all-day event
 
     if isinstance(raw_due, datetime):
         return raw_due
@@ -128,21 +131,51 @@ def parse_due_date(raw_due):
 def create_calendar_event(creds, title, description, due_date):
     service = build("calendar", "v3", credentials=creds)
 
-    due_datetime = parse_due_date(due_date)
-    end_datetime = due_datetime + timedelta(hours=1)
+    parsed = parse_due_date(due_date)
 
-    event = {
-        "summary": title,
-        "description": description,
-        "start": {
-            "dateTime": due_datetime.isoformat(),
-            "timeZone": "America/New_York",
-        },
-        "end": {
-            "dateTime": end_datetime.isoformat(),
-            "timeZone": "America/New_York",
-        },
-    }
+    # Case 1: All-day event (date string)
+    if isinstance(parsed, str):
+        event = {
+            "summary": title,
+            "description": description,
+            "start": {"date": parsed},
+            "end": {"date": parsed},
+        }
+
+    # Case 2: Timed event
+    elif isinstance(parsed, datetime):
+        end_datetime = parsed + timedelta(hours=1)
+
+        event = {
+            "summary": title,
+            "description": description,
+            "start": {
+                "dateTime": parsed.isoformat(),
+                "timeZone": "America/New_York",
+            },
+            "end": {
+                "dateTime": end_datetime.isoformat(),
+                "timeZone": "America/New_York",
+            },
+        }
+
+    # Case 3: No due date → default to 11:59 today
+    else:
+        now = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        end = now + timedelta(hours=1)
+
+        event = {
+            "summary": title,
+            "description": description,
+            "start": {
+                "dateTime": now.isoformat(),
+                "timeZone": "America/New_York",
+            },
+            "end": {
+                "dateTime": end.isoformat(),
+                "timeZone": "America/New_York",
+            },
+        }
 
     created_event = service.events().insert(calendarId="primary", body=event).execute()
 
