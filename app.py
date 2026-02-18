@@ -191,6 +191,7 @@ def create_calendar_event(creds, title, description, due_date):
 async def webhook(request: Request):
     data = await request.json()
 
+    print("FULL PAYLOAD:", data)
     print("Webhook received:", data)
 
     creds = user_tokens.get("student")
