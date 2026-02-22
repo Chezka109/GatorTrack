@@ -253,3 +253,40 @@ def debug_assignments():
         return assignments
     except Exception as e:
         return {"error": str(e)}
+
+
+# ==============================
+# TEMP DEBUG TEST EVENT
+# ==============================
+
+
+@app.get("/debug/test-event")
+def test_event():
+    creds = user_tokens.get("student")
+    if not creds:
+        return {"error": "User not authenticated with Google"}
+
+    # Pick a real assignment slug you know exists
+    repo_name = "test-local-16-yourusername"
+
+    assignments = get_classroom_assignments()
+    assignment = find_assignment_by_repo(repo_name, assignments)
+
+    if not assignment:
+        return {"error": "Assignment not found"}
+
+    deadline = assignment.get("deadline")
+
+    event_link = create_calendar_event(
+        creds,
+        title=assignment["title"],
+        description="GitHub Classroom assignment (TEST)",
+        deadline_iso=deadline,
+    )
+
+    return {
+        "status": "Test event created",
+        "event_link": event_link,
+        "matched_assignment": assignment["title"],
+        "deadline": deadline,
+    }
