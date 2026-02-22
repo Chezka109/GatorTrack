@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from apscheduler.schedulers.background import BackgroundScheduler
+from dateutil import parser
 
 app = FastAPI()
 scheduler = BackgroundScheduler()
@@ -155,7 +156,8 @@ def create_or_update_event(creds, assignment_slug, title, description, deadline_
     # -----------------------
     if deadline_iso:
         if "T" in deadline_iso:
-            utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+            # Parse GitHub ISO UTC and convert to Eastern
+            utc_dt = parser.isoparse(deadline_iso)  # handles Z automatically
             local_dt = utc_dt.astimezone(EASTERN_TZ)
             end_dt = local_dt + timedelta(hours=1)
             start = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
