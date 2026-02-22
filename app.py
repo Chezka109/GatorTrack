@@ -218,11 +218,20 @@ async def webhook(request: Request):
         if "repository" not in data:
             return {"message": "Not a repository event"}
 
-        repo_name = data["repository"]["name"]
+        repo_name = data["repository"]["name"].lower()
+        print("Attempting to match repo:", repo_name)
         assignments = get_classroom_assignments()
-        assignment = find_assignment_by_repo(repo_name, assignments)
 
+        assignment = None
+        for a in assignments:
+            slug = a["title"].lower().replace(" ", "-")
+            print("Checking assignment slug:", slug)
+            if repo_name.startswith(slug):
+                print("Matched assignment:", a["title"])
+                assignment = a
+                break
         if not assignment:
+            print("No assignment matched")
             return {"error": "Assignment not found"}
 
         deadline = assignment.get("deadline")
