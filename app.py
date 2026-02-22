@@ -1,5 +1,7 @@
 import os
 import json
+import requests
+from time import time
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -16,10 +18,21 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+CLASSROOM_ID = os.getenv("CLASSROOM_ID")
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+GITHUB_HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json",
+}
 
 # Temporary in-memory storage (fine for MVP)
 user_tokens = {}
+
+# Assignment cache (10 minute TTL)
+assignment_cache = {"data": None, "timestamp": 0}
 
 # ==============================
 # HEALTH CHECK
@@ -52,7 +65,6 @@ def login():
     )
 
     auth_url, _ = flow.authorization_url(prompt="consent")
-
     return RedirectResponse(auth_url)
 
 
@@ -88,8 +100,6 @@ async def callback(request: Request):
 
         flow.fetch_token(code=code)
         creds = flow.credentials
-
-        # Store credentials (MVP only)
         user_tokens["student"] = creds
 
         return {"status": "Google Calendar connected"}
@@ -100,27 +110,38 @@ async def callback(request: Request):
 
 
 # ==============================
-# SAFE DATE PARSER
+# GITHUB CLASSROOM API
 # ==============================
 
 
-def parse_due_date(raw_due):
-    if not raw_due:
-        return None  # Let caller decide fallback behavior
+def get_classroom_assignments():
+    global assignment_cache
 
-    if isinstance(raw_due, str):
-        # If full ISO timestamp already provided
-        if "T" in raw_due:
-            return datetime.fromisoformat(raw_due)
+    # Return cached if under 10 minutes old
+    if assignment_cache["data"] and time() - assignment_cache["timestamp"] < 600:
+        return assignment_cache["data"]
 
-        # If only date provided, return date-only event indicator
-        if len(raw_due) == 10:
-            return raw_due  # Return string for all-day event
+    url = f"https://api.github.com/classrooms/{CLASSROOM_ID}/assignments"
+    response = requests.get(url, headers=GITHUB_HEADERS)
+    response.raise_for_status()
 
-    if isinstance(raw_due, datetime):
-        return raw_due
+    assignments = response.json()
 
-    raise ValueError("Invalid due date format")
+    assignment_cache["data"] = assignments
+    assignment_cache["timestamp"] = time()
+
+    return assignments
+
+
+def find_assignment_by_repo(repo_name, assignments):
+    repo_name = repo_name.lower()
+
+    for assignment in assignments:
+        slug = assignment["title"].lower().replace(" ", "-")
+        if repo_name.startswith(slug):
+            return assignment
+
+    return None
 
 
 # ==============================
@@ -128,40 +149,32 @@ def parse_due_date(raw_due):
 # ==============================
 
 
-def create_calendar_event(creds, title, description, due_date):
+def create_calendar_event(creds, title, description, deadline_iso):
     service = build("calendar", "v3", credentials=creds)
 
-    parsed = parse_due_date(due_date)
-
-    # Case 1: All-day event (date string)
-    if isinstance(parsed, str):
-        event = {
-            "summary": title,
-            "description": description,
-            "start": {"date": parsed},
-            "end": {"date": parsed},
-        }
-
-    # Case 2: Timed event
-    elif isinstance(parsed, datetime):
-        end_datetime = parsed + timedelta(hours=1)
+    if deadline_iso:
+        # GitHub returns ISO string like 2026-03-01T23:59:00Z
+        start_time = deadline_iso
+        end_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00")) + timedelta(
+            hours=1
+        )
 
         event = {
             "summary": title,
             "description": description,
             "start": {
-                "dateTime": parsed.isoformat(),
-                "timeZone": "America/New_York",
+                "dateTime": start_time,
+                "timeZone": "UTC",
             },
             "end": {
-                "dateTime": end_datetime.isoformat(),
-                "timeZone": "America/New_York",
+                "dateTime": end_dt.isoformat(),
+                "timeZone": "UTC",
             },
         }
 
-    # Case 3: No due date → default to 11:59 today
     else:
-        now = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        # Fallback if no deadline
+        now = datetime.utcnow()
         end = now + timedelta(hours=1)
 
         event = {
@@ -169,11 +182,11 @@ def create_calendar_event(creds, title, description, due_date):
             "description": description,
             "start": {
                 "dateTime": now.isoformat(),
-                "timeZone": "America/New_York",
+                "timeZone": "UTC",
             },
             "end": {
                 "dateTime": end.isoformat(),
-                "timeZone": "America/New_York",
+                "timeZone": "UTC",
             },
         }
 
@@ -192,36 +205,36 @@ async def webhook(request: Request):
     data = await request.json()
 
     print("FULL PAYLOAD:", data)
-    print("Webhook received:", data)
 
     creds = user_tokens.get("student")
     if not creds:
         return {"error": "User not authenticated with Google"}
 
     try:
-        # Try extracting assignment info safely
-        title = None
-        due_date = None
+        if "repository" not in data:
+            return {"message": "Not a repository event"}
 
-        # GitHub Classroom repo creation
-        if "repository" in data:
-            title = data["repository"]["name"]
+        repo_name = data["repository"]["name"]
 
-        # If your payload includes deadline somewhere
-        if "assignment" in data:
-            due_date = data["assignment"].get("deadline")
+        assignments = get_classroom_assignments()
+        assignment = find_assignment_by_repo(repo_name, assignments)
 
-        if not title:
-            title = "New Assignment"
+        if not assignment:
+            return {"error": "Assignment not found"}
+
+        deadline = assignment.get("deadline")
 
         event_link = create_calendar_event(
             creds,
-            title=title,
+            title=assignment["title"],
             description="GitHub Classroom assignment",
-            due_date=due_date,
+            deadline_iso=deadline,
         )
 
-        return {"status": "Assignment added to calendar", "event_link": event_link}
+        return {
+            "status": "Assignment added to calendar",
+            "event_link": event_link,
+        }
 
     except Exception as e:
         print("Webhook error:", e)
