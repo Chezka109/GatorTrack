@@ -239,3 +239,17 @@ async def webhook(request: Request):
     except Exception as e:
         print("Webhook error:", e)
         return JSONResponse({"error": str(e)}, status_code=400)
+
+
+# ==============================
+# TEMP DEBUG ENDPOINT
+# ==============================
+
+
+@app.get("/debug/assignments")
+def debug_assignments():
+    try:
+        assignments = get_classroom_assignments()
+        return assignments
+    except Exception as e:
+        return {"error": str(e)}
