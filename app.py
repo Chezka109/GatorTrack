@@ -266,8 +266,7 @@ def test_event():
     if not creds:
         return {"error": "User not authenticated with Google"}
 
-    # Pick a real assignment slug you know exists
-    repo_name = "test-local-16-yourusername"
+    repo_name = "test-local-19-Chezka109"
 
     assignments = get_classroom_assignments()
     assignment = find_assignment_by_repo(repo_name, assignments)
