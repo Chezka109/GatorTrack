@@ -151,27 +151,27 @@ def find_assignment_by_repo(repo_name, assignments):
 
 def create_or_update_event(creds, assignment_slug, title, description, deadline_iso):
     service = build("calendar", "v3", credentials=creds)
+
     # -----------------------
     # Parse Deadline
     # -----------------------
     if deadline_iso:
         if "T" in deadline_iso:
-            # Parse GitHub ISO UTC and convert to Eastern
-            utc_dt = parser.isoparse(deadline_iso)  # handles Z automatically
+            # Timed event: start=end=deadline
+            utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
             local_dt = utc_dt.astimezone(EASTERN_TZ)
-            end_dt = local_dt + timedelta(hours=1)
+
             start = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
-            end = {"dateTime": end_dt.isoformat(), "timeZone": "America/New_York"}
+            end = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
         else:
+            # Date-only event
             start = {"date": deadline_iso}
             end = {"date": deadline_iso}
     else:
-        now = datetime.now(EASTERN_TZ).replace(
-            hour=23, minute=59, second=0, microsecond=0
-        )
-        end_dt = now + timedelta(hours=1)
-        start = {"dateTime": now.isoformat(), "timeZone": "America/New_York"}
-        end = {"dateTime": end_dt.isoformat(), "timeZone": "America/New_York"}
+        # No deadline → all-day today
+        today = datetime.now(EASTERN_TZ).date()
+        start = {"date": today.isoformat()}
+        end = {"date": today.isoformat()}
 
     event_body = {
         "summary": title,
