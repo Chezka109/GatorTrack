@@ -160,18 +160,22 @@ def create_or_update_event(creds, assignment_slug, title, description, deadline_
             # Timed event: start=end=deadline
             utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
             local_dt = utc_dt.astimezone(EASTERN_TZ)
-
             start = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
-            end = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
+            end = {
+                "dateTime": local_dt.isoformat(),
+                "timeZone": "America/New_York",
+            }  # same start/end
         else:
             # Date-only event
             start = {"date": deadline_iso}
             end = {"date": deadline_iso}
     else:
-        # No deadline → all-day today
+        # No deadline → all-day event
         today = datetime.now(EASTERN_TZ).date()
+        next_day = today + timedelta(days=1)
+
         start = {"date": today.isoformat()}
-        end = {"date": today.isoformat()}
+        end = {"date": next_day.isoformat()}
 
     event_body = {
         "summary": title,
@@ -265,9 +269,16 @@ def sync_assignments():
 
     try:
         assignments = get_classroom_assignments()
+
         for assignment in assignments:
             slug = assignment["title"].lower().replace(" ", "-")
+
+            # 🔥 Only update assignments that already have events
+            if slug not in event_mapping:
+                continue
+
             deadline = assignment.get("deadline")
+
             create_or_update_event(
                 creds,
                 assignment_slug=slug,
@@ -275,7 +286,9 @@ def sync_assignments():
                 description="GitHub Classroom assignment (auto-sync)",
                 deadline_iso=deadline,
             )
+
         print(f"[{datetime.now(EASTERN_TZ)}] Auto-sync completed")
+
     except Exception as e:
         print("Auto-sync error:", e)
 
