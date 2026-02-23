@@ -263,13 +263,10 @@ def sync_assignments():
 
         for github_username, creds in user_tokens.items():
             for assignment in assignments:
-                slug = assignment["title"].lower().replace(" ", "-")
-                key = (github_username, slug)
-
-                # Only update assignments that already exist
-                if key not in event_mapping:
+                if assignment.get("accepted", 0) < 1:
                     continue
 
+                slug = assignment["title"].lower().replace(" ", "-")
                 deadline = assignment.get("deadline")
 
                 create_or_update_event(
@@ -281,10 +278,13 @@ def sync_assignments():
                     deadline_iso=deadline,
                 )
 
-        print(f"[{datetime.now(EASTERN_TZ)}] Auto-sync updated existing events only")
+        print(f"[{datetime.now(EASTERN_TZ)}] Auto-sync completed")
 
     except Exception as e:
         print("Auto-sync error:", e)
+
+
+scheduler.add_job(sync_assignments, "interval", minutes=10)
 
 
 # ==============================
