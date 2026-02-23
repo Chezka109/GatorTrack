@@ -43,6 +43,7 @@ GITHUB_HEADERS = {
 user_tokens = {}  # github_username -> Google credentials
 assignment_cache = {"data": None, "timestamp": 0}
 event_mapping = {}  # (github_username, assignment_slug) -> event_id
+event_update_log = []  # Track all event updates for debugging
 
 
 # ==============================
@@ -228,10 +229,38 @@ def create_or_update_event(
             .update(calendarId="primary", eventId=event_id, body=event_body)
             .execute()
         )
+
+        # Log the update
+        log_entry = {
+            "timestamp": datetime.now(EASTERN_TZ).isoformat(),
+            "action": "updated",
+            "user": github_username,
+            "assignment": assignment_slug,
+            "deadline": deadline_iso,
+            "event_id": event_id,
+            "event_link": updated.get("htmlLink"),
+        }
+        event_update_log.append(log_entry)
+        print(f"[UPDATE] {github_username} - {title} - deadline: {deadline_iso}")
+
         return updated.get("htmlLink")
     else:
         created = service.events().insert(calendarId="primary", body=event_body).execute()
         event_mapping[key] = created["id"]
+
+        # Log the creation
+        log_entry = {
+            "timestamp": datetime.now(EASTERN_TZ).isoformat(),
+            "action": "created",
+            "user": github_username,
+            "assignment": assignment_slug,
+            "deadline": deadline_iso,
+            "event_id": created["id"],
+            "event_link": created.get("htmlLink"),
+        }
+        event_update_log.append(log_entry)
+        print(f"[CREATE] {github_username} - {title} - deadline: {deadline_iso}")
+
         return created.get("htmlLink")
 
 
@@ -328,7 +357,7 @@ scheduler.add_job(sync_assignments, "interval", minutes=10)
 
 
 # ==============================
-# DEBUG
+# DEBUG & MONITORING
 # ==============================
 @app.get("/debug/assignments")
 def debug_assignments():
@@ -336,3 +365,56 @@ def debug_assignments():
         return get_classroom_assignments()
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/debug/event-log")
+def debug_event_log():
+    """View all event creation/update history"""
+    return {
+        "total_events": len(event_update_log),
+        "events": event_update_log[-50:],  # Last 50 events
+    }
+
+
+@app.get("/debug/event-mappings")
+def debug_event_mappings():
+    """View all tracked event mappings"""
+    return {
+        "total_mappings": len(event_mapping),
+        "mappings": [
+            {"user": key[0], "assignment": key[1], "event_id": event_id}
+            for key, event_id in event_mapping.items()
+        ],
+    }
+
+
+@app.get("/debug/connected-users")
+def debug_connected_users():
+    """View all connected users"""
+    return {"total_users": len(user_tokens), "usernames": list(user_tokens.keys())}
+
+
+@app.post("/debug/force-sync")
+def debug_force_sync():
+    """Manually trigger auto-sync for testing"""
+    try:
+        sync_assignments()
+        return {
+            "status": "sync_completed",
+            "timestamp": datetime.now(EASTERN_TZ).isoformat(),
+            "updates": event_update_log[-10:],  # Last 10 updates
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/debug/clear-cache")
+def debug_clear_cache():
+    """Clear assignment cache to force fresh data from GitHub"""
+    global assignment_cache
+    old_timestamp = assignment_cache["timestamp"]
+    assignment_cache = {"data": None, "timestamp": 0}
+    return {
+        "status": "cache_cleared",
+        "previous_cache_age_seconds": time() - old_timestamp if old_timestamp else 0,
+    }
