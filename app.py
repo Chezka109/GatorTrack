@@ -216,19 +216,21 @@ async def webhook(request: Request):
     if "repository" not in data:
         return {"message": "Not a repository event"}
 
-    repo_name = data["repository"]["name"].lower()
+    repo_name = data["repository"]["name"]
 
     # Extract student username from repo name (format: assignment-slug-username)
     repo_parts = repo_name.split("-")
     if len(repo_parts) < 2:
         return {"error": "Invalid repository name format"}
 
-    # The last part should be the student's GitHub username
+    # The last part should be the student's GitHub username (case-sensitive)
     github_username = repo_parts[-1]
 
     print("Stored users:", user_tokens.keys())
     print("Incoming username:", github_username)
     print("Repository name:", repo_name)
+
+    repo_name_lower = repo_name.lower()
 
     creds = user_tokens.get(github_username)
     if not creds:
@@ -236,7 +238,7 @@ async def webhook(request: Request):
 
     try:
         assignments = get_classroom_assignments()
-        assignment = find_assignment_by_repo(repo_name, assignments)
+        assignment = find_assignment_by_repo(repo_name_lower, assignments)
 
         if not assignment:
             return {"error": "Assignment not found"}
