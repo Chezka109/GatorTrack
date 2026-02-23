@@ -7,12 +7,14 @@ import pytz
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 scheduler = BackgroundScheduler()
 scheduler.start()
 
@@ -57,14 +59,42 @@ def health():
 @app.get("/connect", response_class=HTMLResponse)
 def connect_page():
     return """
-    <html>
+    <!DOCTYPE html>
+    <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>GatorTrack - Connect Calendar</title>
+            <link rel="stylesheet" href="/static/style.css">
+        </head>
         <body>
-            <h2>Connect Your Google Calendar</h2>
-            <form action="/start-auth" method="post">
-                <label>GitHub Username:</label>
-                <input type="text" name="github_username" required />
-                <button type="submit">Connect</button>
-            </form>
+            <div class="container">
+                <div class="logo">
+                    <h1>GatorTrack</h1>
+                    <p>Sync GitHub Classroom with Google Calendar</p>
+                </div>
+                
+                <h2>Connect Your Calendar</h2>
+                
+                <form action="/start-auth" method="post">
+                    <div class="form-group">
+                        <label for="github_username">GITHUB USERNAME</label>
+                        <input 
+                            type="text" 
+                            id="github_username"
+                            name="github_username" 
+                            placeholder="Enter your username"
+                            required 
+                        />
+                    </div>
+                    
+                    <button type="submit">Connect Calendar</button>
+                </form>
+                
+                <div class="info">
+                    Assignment deadlines will automatically sync to your Google Calendar
+                </div>
+            </div>
         </body>
     </html>
     """
