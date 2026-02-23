@@ -4,6 +4,9 @@ import requests
 from time import time
 from datetime import datetime, timedelta
 import pytz
+import smtplib
+from email.mime.text import MIMEText
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
@@ -26,6 +29,11 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 CLASSROOM_ID = os.getenv("CLASSROOM_ID")
 
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 GITHUB_HEADERS = {
@@ -39,6 +47,25 @@ GITHUB_HEADERS = {
 user_tokens = {}  # student_id -> Google credentials
 assignment_cache = {"data": None, "timestamp": 0}  # assignments cache
 event_mapping = {}  # assignment_slug -> {"event_id": str, "student": str}
+
+
+# ==============================
+# HELPER: SEND EMAIL
+# ==============================
+def send_email(to_address: str, subject: str, body: str):
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_FROM
+        msg["To"] = to_address
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+            server.sendmail(EMAIL_FROM, [to_address], msg.as_string())
+        print(f"Email sent to {to_address}")
+    except Exception as e:
+        print(f"Error sending email: {e}")
 
 
 # ==============================
@@ -77,10 +104,12 @@ def login():
 async def callback(request: Request):
     error = request.query_params.get("error")
     code = request.query_params.get("code")
+
     if error:
         return JSONResponse({"error": error}, status_code=400)
     if not code:
         return JSONResponse({"error": "No code returned"}, status_code=400)
+
     try:
         flow = Flow.from_client_config(
             {
@@ -96,7 +125,8 @@ async def callback(request: Request):
         )
         flow.fetch_token(code=code)
         creds = flow.credentials
-        user_tokens["student"] = creds  # MVP: single student
+        user_tokens["student"] = creds  # for MVP, single student
+
         return {"status": "Google Calendar connected"}
     except Exception as e:
         print("OAuth error:", e)
@@ -114,6 +144,7 @@ def get_classroom_assignments():
     url = f"https://api.github.com/classrooms/{CLASSROOM_ID}/assignments"
     response = requests.get(url, headers=GITHUB_HEADERS)
     response.raise_for_status()
+
     assignments = response.json()
     assignment_cache["data"] = assignments
     assignment_cache["timestamp"] = time()
@@ -135,23 +166,17 @@ def find_assignment_by_repo(repo_name, assignments):
 def create_or_update_event(creds, assignment_slug, title, description, deadline_iso):
     service = build("calendar", "v3", credentials=creds)
 
-    # Parse deadline
     if deadline_iso:
         if "T" in deadline_iso:
-            # Timed event: start=end=deadline
             utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
             local_dt = utc_dt.astimezone(EASTERN_TZ)
             start = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
-            end = {
-                "dateTime": local_dt.isoformat(),
-                "timeZone": "America/New_York",
-            }  # same start/end
+            end = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
         else:
-            # All-day date-only event
             start = {"date": deadline_iso}
             end = {"date": deadline_iso}
     else:
-        # No deadline → all-day today
+        # no deadline → all-day event
         today = datetime.now(EASTERN_TZ).strftime("%Y-%m-%d")
         start = {"date": today}
         end = {"date": today}
@@ -163,7 +188,7 @@ def create_or_update_event(creds, assignment_slug, title, description, deadline_
         "end": end,
     }
 
-    # Update if exists
+    # update or create
     if assignment_slug in event_mapping:
         event_id = event_mapping[assignment_slug]["event_id"]
         updated_event = (
@@ -190,9 +215,17 @@ def create_or_update_event(creds, assignment_slug, title, description, deadline_
 async def webhook(request: Request):
     data = await request.json()
     print("Webhook payload:", data)
+
     creds = user_tokens.get("student")
+    student_email = EMAIL_FROM
     if not creds:
-        return {"error": "User not authenticated with Google"}
+        # send email notifying user to authorize
+        send_email(
+            to_address=student_email,
+            subject="Google Calendar Not Authorized",
+            body=f"Please authorize your Google account here: {GOOGLE_REDIRECT_URI}\nThe event will be added after authorization.",
+        )
+        return {"error": "User not authenticated with Google. Email sent."}
 
     try:
         if "repository" not in data:
@@ -201,10 +234,9 @@ async def webhook(request: Request):
         repo_name = data["repository"]["name"].lower()
         assignments = get_classroom_assignments()
         assignment = find_assignment_by_repo(repo_name, assignments)
-        if not assignment:
-            print("No assignment matched")
-            return {"error": "Assignment not found"}
 
+        if not assignment:
+            return {"error": "Assignment not found"}
         if assignment.get("accepted", 0) < 1:
             return {"message": "Assignment not accepted, skipping"}
 
@@ -216,6 +248,7 @@ async def webhook(request: Request):
             description="GitHub Classroom assignment",
             deadline_iso=deadline,
         )
+
         return {"status": "Assignment added/updated", "event_link": event_link}
     except Exception as e:
         print("Webhook error:", e)
@@ -223,19 +256,18 @@ async def webhook(request: Request):
 
 
 # ==============================
-# BACKGROUND TASK: AUTOMATIC SYNC
+# BACKGROUND TASK: AUTO SYNC ACCEPTED ASSIGNMENTS
 # ==============================
 def sync_assignments():
     creds = user_tokens.get("student")
     if not creds:
         print("Sync skipped: student not authenticated")
         return
-
     try:
         assignments = get_classroom_assignments()
         for assignment in assignments:
             if assignment.get("accepted", 0) < 1:
-                continue  # Skip unaccepted assignments
+                continue  # only accepted
             slug = assignment["title"].lower().replace(" ", "-")
             deadline = assignment.get("deadline")
             create_or_update_event(
@@ -250,7 +282,6 @@ def sync_assignments():
         print("Auto-sync error:", e)
 
 
-# Run every 10 minutes
 scheduler.add_job(sync_assignments, "interval", minutes=10)
 
 
