@@ -213,50 +213,30 @@ async def webhook(request: Request):
     data = await request.json()
     print("Webhook payload:", data)
 
-    # -------------------------
-    # Safe GitHub username detection
-    # -------------------------
-    github_username = None
+    if "repository" not in data:
+        return {"message": "Not a repository event"}
 
-    if "repository" in data and "owner" in data["repository"]:
-        github_username = data["repository"]["owner"].get("login")
-    elif "sender" in data:
-        github_username = data["sender"].get("login")
+    github_username = data["repository"]["owner"]["login"]
+    print("Stored users:", user_tokens.keys())
+    print("Incoming username:", github_username)
 
-    if not github_username:
-        print("Webhook ignored: GitHub username not found")
-        return {"status": "no_github_username_found"}
+    repo_name = data["repository"]["name"].lower()
 
-    # -------------------------
-    # Check if user has connected Google
-    # -------------------------
     creds = user_tokens.get(github_username)
     if not creds:
-        print(f"GitHub user {github_username} has not connected Google Calendar")
         return {"status": "user_not_connected"}
 
     try:
         assignments = get_classroom_assignments()
-        repo_name = data.get("repository", {}).get("name", "").lower()
-
         assignment = find_assignment_by_repo(repo_name, assignments)
+
         if not assignment:
-            print(f"No matching assignment for repo {repo_name}")
             return {"error": "Assignment not found"}
 
         if assignment.get("accepted", 0) < 1:
-            print(f"Assignment '{assignment['title']}' not accepted, skipping")
             return {"message": "Assignment not accepted, skipping"}
 
-        # Optional: skip past assignments
-        deadline_iso = assignment.get("deadline")
-        if deadline_iso:
-            from datetime import timezone
-
-            assignment_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
-            if assignment_dt < datetime.now(timezone.utc):
-                print(f"Assignment '{assignment['title']}' deadline has passed, skipping")
-                return {"message": "Deadline passed, skipping"}
+        deadline = assignment.get("deadline")
 
         event_link = create_or_update_event(
             creds,
@@ -264,10 +244,9 @@ async def webhook(request: Request):
             assignment_slug=assignment["title"].lower().replace(" ", "-"),
             title=assignment["title"],
             description="GitHub Classroom assignment",
-            deadline_iso=deadline_iso,
+            deadline_iso=deadline,
         )
 
-        print(f"Event created/updated for {github_username}: {event_link}")
         return {"status": "Assignment added/updated", "event_link": event_link}
 
     except Exception as e:
