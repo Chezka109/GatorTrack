@@ -1,15 +1,17 @@
 import os
-import json
 import requests
 from time import time
 from datetime import datetime, timedelta
 import pytz
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, JSONResponse
+
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request as GoogleRequest
+
 from apscheduler.schedulers.background import BackgroundScheduler
-from dateutil import parser
 
 app = FastAPI()
 scheduler = BackgroundScheduler()
@@ -18,7 +20,7 @@ scheduler.start()
 EASTERN_TZ = pytz.timezone("America/New_York")
 
 # ==============================
-# ENV VARIABLES (Render)
+# ENV VARIABLES
 # ==============================
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -39,9 +41,10 @@ GITHUB_HEADERS = {
 # TEMP STORAGE (MVP)
 # ==============================
 
-user_tokens = {}  # student_id -> Google credentials
-assignment_cache = {"data": None, "timestamp": 0}  # assignments cache
-event_mapping = {}  # assignment_slug -> {"event_id": str, "student": str}
+user_tokens = {}  # single student for MVP
+assignment_cache = {"data": None, "timestamp": 0}
+event_mapping = {}  # slug -> event_id
+
 
 # ==============================
 # HEALTH CHECK
@@ -54,7 +57,7 @@ def health():
 
 
 # ==============================
-# GOOGLE LOGIN
+# GOOGLE OAUTH
 # ==============================
 
 
@@ -77,51 +80,42 @@ def login():
     return RedirectResponse(auth_url)
 
 
-# ==============================
-# GOOGLE CALLBACK
-# ==============================
-
-
 @app.get("/auth/callback")
 async def callback(request: Request):
-    error = request.query_params.get("error")
     code = request.query_params.get("code")
+    error = request.query_params.get("error")
 
     if error:
         return JSONResponse({"error": error}, status_code=400)
-    if not code:
-        return JSONResponse({"error": "No code returned"}, status_code=400)
 
-    try:
-        flow = Flow.from_client_config(
-            {
-                "web": {
-                    "client_id": GOOGLE_CLIENT_ID,
-                    "client_secret": GOOGLE_CLIENT_SECRET,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            },
-            scopes=SCOPES,
-            redirect_uri=GOOGLE_REDIRECT_URI,
-        )
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        user_tokens["student"] = creds  # for MVP, single student
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
 
-        return {"status": "Google Calendar connected"}
-    except Exception as e:
-        print("OAuth error:", e)
-        return JSONResponse({"error": str(e)}, status_code=400)
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+
+    user_tokens["student"] = creds
+    return {"status": "Google Calendar connected"}
 
 
 # ==============================
-# GITHUB CLASSROOM API
+# GITHUB CLASSROOM
 # ==============================
 
 
 def get_classroom_assignments():
     global assignment_cache
+
     if assignment_cache["data"] and time() - assignment_cache["timestamp"] < 600:
         return assignment_cache["data"]
 
@@ -132,45 +126,42 @@ def get_classroom_assignments():
     assignments = response.json()
     assignment_cache["data"] = assignments
     assignment_cache["timestamp"] = time()
+
     return assignments
 
 
-def find_assignment_by_repo(repo_name, assignments):
-    repo_name = repo_name.lower()
-    for assignment in assignments:
-        slug = assignment["title"].lower().replace(" ", "-")
-        if repo_name.startswith(slug):
-            return assignment
-    return None
-
-
 # ==============================
-# GOOGLE CALENDAR EVENT CREATION/UPDATE
+# GOOGLE CALENDAR EVENT
 # ==============================
 
 
-def create_or_update_event(creds, assignment_slug, title, description, deadline_iso):
-    service = build("calendar", "v3", credentials=creds)
+def create_or_update_event(creds, slug, title, description, deadline_iso):
+    # Refresh token if needed
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleRequest())
+
+    service = build("calendar", "v3", credentials=creds)  # type: ignore
 
     # -----------------------
-    # Parse Deadline
+    # Deadline Handling
     # -----------------------
+
     if deadline_iso:
-        if "T" in deadline_iso:
-            # Timed event: start=end=deadline
-            utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
-            local_dt = utc_dt.astimezone(EASTERN_TZ)
-            start = {"dateTime": local_dt.isoformat(), "timeZone": "America/New_York"}
-            end = {
-                "dateTime": local_dt.isoformat(),
-                "timeZone": "America/New_York",
-            }  # same start/end
-        else:
-            # Date-only event
-            start = {"date": deadline_iso}
-            end = {"date": deadline_iso}
+        utc_dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+        local_dt = utc_dt.astimezone(EASTERN_TZ)
+
+        start = {
+            "dateTime": local_dt.isoformat(),
+            "timeZone": "America/New_York",
+        }
+
+        end = {
+            "dateTime": local_dt.isoformat(),  # deadline = deadline
+            "timeZone": "America/New_York",
+        }
+
     else:
-        # No deadline → all-day event
+        # All-day event (must end next day)
         today = datetime.now(EASTERN_TZ).date()
         next_day = today + timedelta(days=1)
 
@@ -185,154 +176,120 @@ def create_or_update_event(creds, assignment_slug, title, description, deadline_
     }
 
     # -----------------------
-    # Update if exists
+    # Update or Create
     # -----------------------
-    if assignment_slug in event_mapping:
-        event_id = event_mapping[assignment_slug]["event_id"]
-        updated_event = (
+
+    if slug in event_mapping:
+        event_id = event_mapping[slug]
+
+        updated = (
             service.events()
             .update(calendarId="primary", eventId=event_id, body=event_body)
             .execute()
         )
-        return updated_event.get("htmlLink")
+
+        return updated.get("htmlLink")
+
     else:
-        created_event = (
-            service.events().insert(calendarId="primary", body=event_body).execute()
-        )
-        event_mapping[assignment_slug] = {
-            "event_id": created_event["id"],
-            "student": "student",
-        }
-        return created_event.get("htmlLink")
+        created = service.events().insert(calendarId="primary", body=event_body).execute()
+
+        event_mapping[slug] = created["id"]
+        return created.get("htmlLink")
 
 
 # ==============================
-# GITHUB WEBHOOK
+# WEBHOOK (CREATE EVENT)
 # ==============================
 
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-    print("Webhook payload:", data)
 
     creds = user_tokens.get("student")
     if not creds:
         return {"error": "User not authenticated with Google"}
 
-    try:
-        if "repository" not in data:
-            return {"message": "Not a repository event"}
+    if "repository" not in data:
+        return {"message": "Not a repository event"}
 
-        repo_name = data["repository"]["name"].lower()
-        print("Attempting to match repo:", repo_name)
-        assignments = get_classroom_assignments()
+    repo_name = data["repository"]["name"].lower()
+    print("Repo name:", repo_name)
 
-        assignment = None
-        for a in assignments:
-            slug = a["title"].lower().replace(" ", "-")
-            print("Checking assignment slug:", slug)
-            if repo_name.startswith(slug):
-                print("Matched assignment:", a["title"])
-                assignment = a
-                break
-        if not assignment:
-            print("No assignment matched")
-            return {"error": "Assignment not found"}
+    assignments = get_classroom_assignments()
 
-        deadline = assignment.get("deadline")
-        event_link = create_or_update_event(
-            creds,
-            assignment_slug=assignment["title"].lower().replace(" ", "-"),
-            title=assignment["title"],
-            description="GitHub Classroom assignment",
-            deadline_iso=deadline,
-        )
+    assignment = None
 
-        return {"status": "Assignment added/updated", "event_link": event_link}
+    for a in assignments:
+        slug = a["slug"].lower()
+        print("Checking slug:", slug)
 
-    except Exception as e:
-        print("Webhook error:", e)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        if repo_name.startswith(slug):
+            assignment = a
+            break
+
+    if not assignment:
+        print("No assignment matched")
+        return {"error": "Assignment not found"}
+
+    deadline = assignment.get("deadline")
+
+    event_link = create_or_update_event(
+        creds,
+        slug=assignment["slug"],
+        title=assignment["title"],
+        description="GitHub Classroom assignment",
+        deadline_iso=deadline,
+    )
+
+    return {"status": "Event created/updated", "event_link": event_link}
 
 
 # ==============================
-# BACKGROUND TASK: AUTOMATIC SYNC
+# BACKGROUND SYNC (UPDATE ONLY)
 # ==============================
 
 
 def sync_assignments():
     creds = user_tokens.get("student")
     if not creds:
-        print("Sync skipped: student not authenticated")
         return
 
-    try:
-        assignments = get_classroom_assignments()
+    assignments = get_classroom_assignments()
 
-        for assignment in assignments:
-            slug = assignment["title"].lower().replace(" ", "-")
+    for assignment in assignments:
+        slug = assignment["slug"]
 
-            # 🔥 Only update assignments that already have events
-            if slug not in event_mapping:
-                continue
+        # ONLY update events that already exist
+        if slug not in event_mapping:
+            continue
 
-            deadline = assignment.get("deadline")
+        deadline = assignment.get("deadline")
 
-            create_or_update_event(
-                creds,
-                assignment_slug=slug,
-                title=assignment["title"],
-                description="GitHub Classroom assignment (auto-sync)",
-                deadline_iso=deadline,
-            )
+        create_or_update_event(
+            creds,
+            slug=slug,
+            title=assignment["title"],
+            description="GitHub Classroom assignment (auto-sync)",
+            deadline_iso=deadline,
+        )
 
-        print(f"[{datetime.now(EASTERN_TZ)}] Auto-sync completed")
-
-    except Exception as e:
-        print("Auto-sync error:", e)
+    print(f"[{datetime.now(EASTERN_TZ)}] Sync complete")
 
 
-# Run every 10 minutes
 scheduler.add_job(sync_assignments, "interval", minutes=10)
 
+
 # ==============================
-# DEBUG ENDPOINTS
+# DEBUG
 # ==============================
 
 
 @app.get("/debug/assignments")
 def debug_assignments():
-    try:
-        return get_classroom_assignments()
-    except Exception as e:
-        return {"error": str(e)}
+    return get_classroom_assignments()
 
 
-@app.get("/debug/test-event")
-def test_event():
-    creds = user_tokens.get("student")
-    if not creds:
-        return {"error": "User not authenticated with Google"}
-
-    repo_name = "test-local-19-Chezka109"
-    assignments = get_classroom_assignments()
-    assignment = find_assignment_by_repo(repo_name, assignments)
-    if not assignment:
-        return {"error": "Assignment not found"}
-
-    deadline = assignment.get("deadline")
-    event_link = create_or_update_event(
-        creds,
-        assignment_slug=assignment["title"].lower().replace(" ", "-"),
-        title=assignment["title"],
-        description="GitHub Classroom assignment (TEST)",
-        deadline_iso=deadline,
-    )
-
-    return {
-        "status": "Test event created",
-        "event_link": event_link,
-        "matched_assignment": assignment["title"],
-        "deadline": deadline,
-    }
+@app.get("/debug/events")
+def debug_events():
+    return event_mapping
