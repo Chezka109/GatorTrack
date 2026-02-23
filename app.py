@@ -216,7 +216,10 @@ async def webhook(request: Request):
     if "repository" not in data:
         return {"message": "Not a repository event"}
 
-    github_username = data["repository"]["owner"]["login"]
+    github_username = data["repository"]["sender"]["login"]
+    print("Stored users:", user_tokens.keys())
+    print("Incoming username:", github_username)
+
     repo_name = data["repository"]["name"].lower()
 
     creds = user_tokens.get(github_username)
