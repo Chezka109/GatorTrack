@@ -100,7 +100,7 @@ This prototype is designed to run as a small FastAPI service on Render.
 
 	- `GOOGLE_CLIENT_ID`
 	- `GOOGLE_CLIENT_SECRET`
-	- `GOOGLE_REDIRECT_URI` (must match your Render URL, e.g. `https://YOUR.onrender.com/auth/callback`)
+	- `GOOGLE_REDIRECT_URI` (must match your Render URL, e.g. `https://http://helping-hand-xjds.onrender.com/auth/callback`)
 	- `GITHUB_TOKEN`
 	- `CLASSROOM_ID`
 
@@ -122,7 +122,7 @@ Expected result: the callback returns a JSON status like `"<username> connected 
 
 Point the GitHub (org/classroom) webhook to:
 
-- `POST https://<your-host>/webhook`
+- `POST http://helping-hand-xjds.onrender.com/webhook`
 
 The handler expects a JSON body that includes repository info, e.g.:
 
