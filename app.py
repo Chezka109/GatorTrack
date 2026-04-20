@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 from time import time
 from datetime import datetime
@@ -10,7 +9,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI()
@@ -168,12 +167,11 @@ async def callback(request: Request):
 # GITHUB CLASSROOM API
 # ==============================
 def get_classroom_assignments():
-    global assignment_cache
     if assignment_cache["data"] and time() - assignment_cache["timestamp"] < 600:
         return assignment_cache["data"]
 
     url = f"https://api.github.com/classrooms/{CLASSROOM_ID}/assignments"
-    response = requests.get(url, headers=GITHUB_HEADERS)
+    response = requests.get(url, headers=GITHUB_HEADERS, timeout=10)
     response.raise_for_status()
 
     assignments = response.json()
@@ -275,9 +273,21 @@ async def webhook(request: Request):
     if "repository" not in data:
         return {"message": "Not a repository event"}
 
-    repo_name = data["repository"]["name"]
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        return JSONResponse(
+            {"error": "Invalid repository payload"},
+            status_code=400,
+        )
 
-    # Extract student username from repo name (format: assignment-slug-username)
+    repo_name = repository.get("name")
+    if not isinstance(repo_name, str) or not repo_name:
+        return JSONResponse(
+            {"error": "Missing repository name"},
+            status_code=400,
+        )
+
+    # Extract student username from repo name (assignment-slug-username)
     repo_parts = repo_name.split("-")
     if len(repo_parts) < 2:
         return {"error": "Invalid repository name format"}
@@ -318,7 +328,13 @@ async def webhook(request: Request):
 
         return {"status": "Assignment added/updated", "event_link": event_link}
 
-    except Exception as e:
+    except (
+        requests.RequestException,
+        HttpError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:
         print("Webhook error:", e)
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -349,7 +365,13 @@ def sync_assignments():
 
         print(f"[{datetime.now(EASTERN_TZ)}] Auto-sync completed")
 
-    except Exception as e:
+    except (
+        requests.RequestException,
+        HttpError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:
         print("Auto-sync error:", e)
 
 
@@ -363,7 +385,12 @@ scheduler.add_job(sync_assignments, "interval", minutes=10)
 def debug_assignments():
     try:
         return get_classroom_assignments()
-    except Exception as e:
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:
         return {"error": str(e)}
 
 
@@ -391,7 +418,10 @@ def debug_event_mappings():
 @app.get("/debug/connected-users")
 def debug_connected_users():
     """View all connected users"""
-    return {"total_users": len(user_tokens), "usernames": list(user_tokens.keys())}
+    return {
+        "total_users": len(user_tokens),
+        "usernames": list(user_tokens.keys()),
+    }
 
 
 @app.post("/debug/force-sync")
@@ -404,17 +434,23 @@ def debug_force_sync():
             "timestamp": datetime.now(EASTERN_TZ).isoformat(),
             "updates": event_update_log[-10:],  # Last 10 updates
         }
-    except Exception as e:
+    except (
+        requests.RequestException,
+        HttpError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:
         return {"error": str(e)}
 
 
 @app.post("/debug/clear-cache")
 def debug_clear_cache():
     """Clear assignment cache to force fresh data from GitHub"""
-    global assignment_cache
     old_timestamp = assignment_cache["timestamp"]
-    assignment_cache = {"data": None, "timestamp": 0}
+    assignment_cache["data"] = None
+    assignment_cache["timestamp"] = 0
     return {
         "status": "cache_cleared",
-        "previous_cache_age_seconds": time() - old_timestamp if old_timestamp else 0,
+        "previous_cache_age_seconds": (time() - old_timestamp if old_timestamp else 0),
     }

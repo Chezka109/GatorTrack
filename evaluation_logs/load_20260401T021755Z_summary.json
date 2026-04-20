@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-04-01T02:17:55.697486+00:00",
+  "ended_at": "2026-04-01T02:19:47.823976+00:00",
+  "duration_seconds": 112.126,
+  "total_requests": 604,
+  "failures": 0,
+  "availability_percent": 100.0,
+  "mtbf_seconds": 112.126,
+  "latency_ms": {
+    "count": 604,
+    "p50": 67.003,
+    "p90": 89.441,
+    "p95": 153.102,
+    "p99": 232.931
+  },
+  "by_endpoint": {
+    "/connect": {
+      "total": 238,
+      "failures": 0,
+      "availability_percent": 100.0
+    },
+    "/health": {
+      "total": 363,
+      "failures": 0,
+      "availability_percent": 100.0
+    },
+    "/webhook": {
+      "total": 3,
+      "failures": 0,
+      "availability_percent": 100.0
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-04-01T02:06:56.727828+00:00",
+  "base_url": "https://helping-hand-xjds.onrender.com",
+  "cases": [
+    {
+      "name": "health_ok",
+      "method": "GET",
+      "endpoint": "/health",
+      "status_code": 200,
+      "latency_ms": 166.73133400036022,
+      "ok": true,
+      "response_json": {
+        "status": "ok"
+      },
+      "error": null
+    },
+    {
+      "name": "webhook_missing_repository_key",
+      "method": "POST",
+      "endpoint": "/webhook",
+      "status_code": 200,
+      "latency_ms": 130.51379199896473,
+      "ok": true,
+      "response_json": {
+        "message": "Not a repository event"
+      },
+      "error": null
+    },
+    {
+      "name": "webhook_repository_missing_name",
+      "method": "POST",
+      "endpoint": "/webhook",
+      "status_code": 500,
+      "latency_ms": 78.9932920015417,
+      "ok": false,
+      "response_json": null,
+      "error": null
+    },
+    {
+      "name": "webhook_repo_name_invalid_format",
+      "method": "POST",
+      "endpoint": "/webhook",
+      "status_code": 200,
+      "latency_ms": 75.8948330039857,
+      "ok": true,
+      "response_json": {
+        "error": "Invalid repository name format"
+      },
+      "error": null
+    },
+    {
+      "name": "webhook_user_not_connected",
+      "method": "POST",
+      "endpoint": "/webhook",
+      "status_code": 200,
+      "latency_ms": 76.60095801111311,
+      "ok": true,
+      "response_json": {
+        "status": "user_not_connected"
+      },
+      "error": null
+    }
+  ],
+  "summary": {
+    "total_cases": 5,
+    "failures": 1,
+    "pass_rate_percent": 80.0,
+    "latency_ms": {
+      "avg": 105.747,
+      "p50": 78.993,
+      "p90": 166.731,
+      "p95": 166.731,
+      "p99": 166.731
+    },
+    "status_code_counts": {
+      "200": 4,
+      "500": 1
+    }
+  }
+}
